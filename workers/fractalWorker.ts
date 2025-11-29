@@ -42,12 +42,13 @@ type GLState = {
     planeVariable: WebGLUniformLocation | null;
     manualZ: WebGLUniformLocation | null;
     manualC: WebGLUniformLocation | null;
-    manualExponent: WebGLUniformLocation | null;
-    colorScheme: WebGLUniformLocation | null;
-    rotation: WebGLUniformLocation | null;
-    equationMode: WebGLUniformLocation | null;
+      manualExponent: WebGLUniformLocation | null;
+      colorScheme: WebGLUniformLocation | null;
+      rotation: WebGLUniformLocation | null;
+      equationMode: WebGLUniformLocation | null;
+      lowPass: WebGLUniformLocation | null;
+    };
   };
-};
 
 let activeRequestId = 0;
 let glState: GLState | null = null;
@@ -134,6 +135,9 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
   if (uniforms.equationMode) {
     gl.uniform1i(uniforms.equationMode, equationMode);
   }
+  if (uniforms.lowPass) {
+    gl.uniform1f(uniforms.lowPass, Math.min(Math.max(payload.lowPass, 0), 1));
+  }
 
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -154,8 +158,18 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
 }
 
 function renderWithCpu(payload: FractalRenderPayload, id: number) {
-  const { width, height, center, scale, maxIterations, planeVariable, manualValues, colorScheme } =
-    payload;
+  const {
+    width,
+    height,
+    center,
+    scale,
+    maxIterations,
+    planeVariable,
+    manualValues,
+    colorScheme,
+    lowPass,
+    rotation,
+  } = payload;
   const { fn } = compileEquation(payload.equationSource, OPS);
   const evaluator = fn ?? fallbackEvaluator;
   const { fn: interiorFn } = compileInterior(payload.interiorSource, OPS);
@@ -169,9 +183,12 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
   const currentPlane = planeVariable;
   const colorizer = colorizers[colorScheme as ColorScheme] ?? colorizers.classic;
   const startTime = performance.now();
-  const rotation = payload.rotation;
   const cosRotation = Math.cos(rotation);
   const sinRotation = Math.sin(rotation);
+  const clampedLowPass = Math.min(Math.max(lowPass, 0), 1);
+  const lowPassBase = [8, 12, 16];
+  const applyLowPass = (value: number, index: number) =>
+    Math.round(value * (1 - clampedLowPass) + lowPassBase[index] * clampedLowPass);
 
   for (let startY = 0; startY < height; startY += rowsPerChunk) {
     if (id !== activeRequestId) {
@@ -225,16 +242,16 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
             last: z,
           };
           const color = interiorFn(orbit, OPS, INTERIOR_HELPERS);
-          buffer[pixelIndex] = color.r;
-          buffer[pixelIndex + 1] = color.g;
-          buffer[pixelIndex + 2] = color.b;
+          buffer[pixelIndex] = applyLowPass(color.r, 0);
+          buffer[pixelIndex + 1] = applyLowPass(color.g, 1);
+          buffer[pixelIndex + 2] = applyLowPass(color.b, 2);
           buffer[pixelIndex + 3] = 255;
         } else {
           const shade = iter / maxIterations;
           const [r, g, b] = colorizer(shade);
-          buffer[pixelIndex] = r;
-          buffer[pixelIndex + 1] = g;
-          buffer[pixelIndex + 2] = b;
+          buffer[pixelIndex] = applyLowPass(r, 0);
+          buffer[pixelIndex + 1] = applyLowPass(g, 1);
+          buffer[pixelIndex + 2] = applyLowPass(b, 2);
           buffer[pixelIndex + 3] = 255;
         }
       }
@@ -303,6 +320,7 @@ function ensureGlState(width: number, height: number): GLState {
     uniform int uColorScheme;
     uniform float uRotation;
     uniform int uEquationMode;
+    uniform float uLowPass;
 
     vec2 complexMul(vec2 a, vec2 b) {
       return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -371,6 +389,8 @@ function ensureGlState(width: number, height: number): GLState {
       return complexAdd(complexPow(currentZ, exponentValue), cValue);
     }
 
+    const vec3 LOW_PASS_BASE = vec3(0.03, 0.05, 0.07);
+
     void main() {
       float canvasY = uResolution.y - gl_FragCoord.y;
       float dx = (gl_FragCoord.x - 0.5 * uResolution.x) * uScale;
@@ -417,6 +437,7 @@ function ensureGlState(width: number, height: number): GLState {
       iter = i + 1;
     }
 
+    vec3 rgb;
     if (iter >= uMaxIterations) {
       float samples = max(orbitCount, 1.0);
       float avgMag = orbitMagSum / samples;
@@ -424,13 +445,14 @@ function ensureGlState(width: number, height: number): GLState {
       float hue = 210.0 + 90.0 * sin(meanAngle);
       float saturation = 0.5 + 0.3 * min(1.0, orbitMaxMag / 4.0);
       float lightness = 0.25 + 0.5 * min(1.0, avgMag / 3.0);
-      vec3 rgb = hsl2rgb(hue, saturation, lightness);
-      gl_FragColor = vec4(rgb, 1.0);
+      rgb = hsl2rgb(hue, saturation, lightness);
     } else {
       float shade = float(iter) / float(uMaxIterations);
-      vec3 rgb = colorize(shade, uColorScheme);
-      gl_FragColor = vec4(rgb, 1.0);
+      rgb = colorize(shade, uColorScheme);
     }
+
+    rgb = mix(rgb, LOW_PASS_BASE, clamp(uLowPass, 0.0, 1.0));
+    gl_FragColor = vec4(rgb, 1.0);
     }
   `;
 
@@ -471,6 +493,7 @@ function ensureGlState(width: number, height: number): GLState {
       colorScheme: gl.getUniformLocation(program, "uColorScheme"),
       rotation: gl.getUniformLocation(program, "uRotation"),
       equationMode: gl.getUniformLocation(program, "uEquationMode"),
+      lowPass: gl.getUniformLocation(program, "uLowPass"),
     },
   };
 

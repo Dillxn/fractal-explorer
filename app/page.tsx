@@ -104,6 +104,7 @@ function FractalExplorer() {
   const [activeManualKey, setActiveManualKey] = useState<VariableKey>(manualOptions[0]);
   const [sensitivity, setSensitivity] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [lowPass, setLowPass] = useState(0);
   const presetSelectRef = useRef<HTMLSelectElement>(null);
   const [equationInput, setEquationInput] = useState(defaultEquationSource);
   const [equationError, setEquationError] = useState<string | null>(initialCompilation.error);
@@ -141,6 +142,7 @@ function FractalExplorer() {
     setInteriorInput(defaultInteriorSource);
     setSensitivity(1);
     setRotation(0);
+    setLowPass(0);
   }, [applyPreset, presetId]);
 
   useEffect(() => {
@@ -216,6 +218,7 @@ function FractalExplorer() {
       "[ / ]: adjust keyboard sensitivity",
       "R: reset explorer to defaults",
       ", / .: decrease / increase max iterations",
+      "- / =: adjust low-pass filter",
     ],
     [],
   );
@@ -318,6 +321,16 @@ function FractalExplorer() {
       if (key === "]") {
         event.preventDefault();
         setSensitivity((prev) => Math.min(4, Number((prev * 1.25).toFixed(3))));
+        return;
+      }
+      if (key === "-") {
+        event.preventDefault();
+        setLowPass((prev) => Math.max(0, Number((prev - 0.05).toFixed(3))));
+        return;
+      }
+      if (key === "=" || key === "+") {
+        event.preventDefault();
+        setLowPass((prev) => Math.min(1, Number((prev + 0.05).toFixed(3))));
         return;
       }
       if (key === ",") {
@@ -561,6 +574,7 @@ function FractalExplorer() {
         equationSource: equationInput,
         interiorSource: interiorInput,
         rotation,
+        lowPass,
       },
     });
 
@@ -580,6 +594,7 @@ function FractalExplorer() {
     interiorInput,
     interiorError,
     rotation,
+    lowPass,
   ]);
 
   const zoomLevel = useMemo(() => (3 / scale).toFixed(2), [scale]);
@@ -822,6 +837,23 @@ function FractalExplorer() {
               <p className="text-xs text-slate-500">Tap [ / ] for quick tweaks.</p>
             </section>
 
+            <section className="mt-2 space-y-1">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-400" htmlFor="lowpass">
+                Low-pass filter ×{lowPass.toFixed(2)}
+              </label>
+              <input
+                id="lowpass"
+                type="range"
+                min={0}
+                max={1}
+                step={0.01}
+                value={lowPass}
+                onChange={(event) => setLowPass(Number(event.target.value))}
+                className="w-full accent-cyan-400"
+              />
+              <p className="text-xs text-slate-500">Use - / = for quick tweaks.</p>
+            </section>
+
             <section className="mt-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Controls</h2>
               <ul className="mt-2 space-y-1 text-xs text-slate-400">
@@ -845,6 +877,7 @@ function FractalExplorer() {
         </span>
         <span>Sensitivity ×{sensitivity.toFixed(2)}</span>
         <span>Rotation {rotationDegrees}°</span>
+        <span>Low-pass ×{lowPass.toFixed(2)}</span>
       </div>
     </main>
   );

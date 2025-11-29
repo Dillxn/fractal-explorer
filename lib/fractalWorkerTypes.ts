@@ -14,6 +14,7 @@ export type FractalRenderPayload = {
   equationSource: string;
   interiorSource: string;
   rotation: number;
+  lowPass: number;
 };
 
 export type FractalWorkerRequest = {
