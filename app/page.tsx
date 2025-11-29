@@ -689,53 +689,39 @@ function FractalExplorer() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                     Adjustable variables (U/O + Q/E = selected · J/L + I/K = other)
                   </p>
-                  {manualOptions.map((key) => {
-                    const isActive = key === activeManualKey;
-                    return (
-                  <div
-                    key={key}
-                    className={`rounded-xl border border-white/10 p-3 transition ${
-                      isActive ? "bg-cyan-400/5" : ""
-                    }`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setActiveManualKey(key)}
-                    onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            setActiveManualKey(key);
-                          }
-                        }}
-                      >
-                        <div className="flex items-center justify-between text-xs uppercase text-slate-300">
-                          <span>{variableLabels[key]}</span>
-                          <span className="text-[10px] text-slate-500">
-                            {isActive ? "U/O & Q/E" : "J/L & I/K"}
-                          </span>
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2">
-                          <label className="text-xs text-slate-400">
-                            <span>Real</span>
-                            <input
-                              inputMode="decimal"
-                              value={manualDrafts[key].re}
-                              onChange={handleManualDraftChange(key, "re")}
-                              className="mt-1 w-full rounded border border-white/10 bg-black/60 px-2 py-1 text-sm text-white outline-none focus:border-cyan-400"
-                            />
-                          </label>
-                          <label className="text-xs text-slate-400">
-                            <span>Imag</span>
-                            <input
-                              inputMode="decimal"
-                              value={manualDrafts[key].im}
-                              onChange={handleManualDraftChange(key, "im")}
-                              className="mt-1 w-full rounded border border-white/10 bg-black/60 px-2 py-1 text-sm text-white outline-none focus:border-cyan-400"
-                            />
-                          </label>
-                        </div>
+                  {manualOptions.map((key) => (
+                    <div
+                      key={key}
+                      className="rounded-xl border border-white/10 p-3"
+                    >
+                      <div className="flex items-center justify-between text-xs uppercase text-slate-300">
+                        <span>{variableLabels[key]}</span>
+                        <span className="text-[10px] text-slate-500">
+                          {key === "c" ? "J/L & I/K" : "U/O & Q/E"}
+                        </span>
                       </div>
-                    );
-                  })}
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="text-xs text-slate-400">
+                          <span>Real</span>
+                          <input
+                            inputMode="decimal"
+                            value={manualDrafts[key].re}
+                            onChange={handleManualDraftChange(key, "re")}
+                            className="mt-1 w-full rounded border border-white/10 bg-black/60 px-2 py-1 text-sm text-white outline-none focus:border-cyan-400"
+                          />
+                        </label>
+                        <label className="text-xs text-slate-400">
+                          <span>Imag</span>
+                          <input
+                            inputMode="decimal"
+                            value={manualDrafts[key].im}
+                            onChange={handleManualDraftChange(key, "im")}
+                            className="mt-1 w-full rounded border border-white/10 bg-black/60 px-2 py-1 text-sm text-white outline-none focus:border-cyan-400"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  ))}
                 </section>
               </div>
 
