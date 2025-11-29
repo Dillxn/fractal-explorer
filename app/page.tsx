@@ -322,16 +322,24 @@ function FractalExplorer() {
       }
       if (key === ",") {
         event.preventDefault();
-        setMaxIterations((prev) =>
-          Math.max(MIN_ITERATIONS, Math.round(prev / ITERATION_HOTKEY_FACTOR)),
-        );
+        setMaxIterations((prev) => {
+          if (prev <= MIN_ITERATIONS) {
+            return MIN_ITERATIONS;
+          }
+          const next = Math.floor(prev / ITERATION_HOTKEY_FACTOR);
+          return Math.max(MIN_ITERATIONS, next >= prev ? prev - 1 : next);
+        });
         return;
       }
       if (key === ".") {
         event.preventDefault();
-        setMaxIterations((prev) =>
-          Math.min(MAX_ITERATIONS, Math.round(prev * ITERATION_HOTKEY_FACTOR)),
-        );
+        setMaxIterations((prev) => {
+          if (prev >= MAX_ITERATIONS) {
+            return MAX_ITERATIONS;
+          }
+          const next = Math.ceil(prev * ITERATION_HOTKEY_FACTOR);
+          return Math.min(MAX_ITERATIONS, next <= prev ? prev + 1 : next);
+        });
         return;
       }
       if (movementKeys.has(key)) {
