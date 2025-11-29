@@ -12,11 +12,13 @@ A Next.js + WebGL playground for exploring 2D complex fractals. It ships with a 
 ## Keyboard Cheatsheet
 
 ```
-Arrows / A-D  Pan the viewport
+Arrow ↑/↓     Pan vertically
+A / D         Pan horizontally
+Arrow ←/→     Rotate counter/clockwise
 W / S         Zoom in / out
-J / L         Adjust active variable (real)
+J / L         Adjust secondary variable (real)
 Q / E         Adjust active variable (imag)
-U / O         Adjust secondary variable (real)
+U / O         Adjust active variable (real)
 I / K         Adjust secondary variable (imag)
 , / .         Decrease / increase iterations
 [ / ]         Decrease / increase sensitivity

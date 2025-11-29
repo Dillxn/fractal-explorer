@@ -204,14 +204,15 @@ function FractalExplorer() {
 
   const controls = useMemo(
     () => [
-      "Arrow keys & A/D: pan the view",
+      "Arrow up/down: pan vertically",
+      "A / D: pan horizontally",
       "W / S: zoom in and out",
       "X: cycle which variable is driven by X/Y",
       "U / O: adjust the real part of the active variable",
       "I / K: adjust the other controllable variable (imag axis)",
       "J / L: adjust the other controllable variable (real axis)",
       "Q / E: adjust its imaginary part",
-      "A / D: rotate the viewport (counter / clockwise)",
+      "Arrow left / right: rotate the viewport (counter / clockwise)",
       "[ / ]: adjust keyboard sensitivity",
       "R: reset explorer to defaults",
       ", / .: decrease / increase max iterations",
@@ -368,8 +369,8 @@ function FractalExplorer() {
         if (pressed.has("arrowdown") && !pressed.has("arrowup")) {
           screenDeltaY += panStep;
         }
-        const leftActive = pressed.has("arrowleft") || pressed.has("a");
-        const rightActive = pressed.has("arrowright") || pressed.has("d");
+        const leftActive = pressed.has("a");
+        const rightActive = pressed.has("d");
         if (leftActive && !rightActive) {
           screenDeltaX -= panStep;
         }
@@ -460,10 +461,10 @@ function FractalExplorer() {
 
         const rotationStep = 0.02 * sensitivity;
         let rotationDelta = 0;
-        if (pressed.has("a") && !pressed.has("d")) {
+        if (pressed.has("arrowleft") && !pressed.has("arrowright")) {
           rotationDelta -= rotationStep;
         }
-        if (pressed.has("d") && !pressed.has("a")) {
+        if (pressed.has("arrowright") && !pressed.has("arrowleft")) {
           rotationDelta += rotationStep;
         }
         if (rotationDelta !== 0) {
