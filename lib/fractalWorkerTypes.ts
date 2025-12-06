@@ -1,5 +1,7 @@
 import type { ColorScheme, Complex, VariableKey } from "./fractalMath";
 
+export type RenderMode = "escape" | "soft";
+
 export type ManualValues = Record<VariableKey, Complex>;
 
 export type FractalRenderPayload = {
@@ -11,6 +13,8 @@ export type FractalRenderPayload = {
   planeVariable: VariableKey;
   manualValues: ManualValues;
   colorScheme: ColorScheme;
+  renderMode: RenderMode;
+  softSharpness: number;
   equationSource: string;
   interiorSource: string;
   rotation: number;

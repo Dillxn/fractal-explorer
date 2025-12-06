@@ -18,6 +18,7 @@ export const INITIAL_MANUAL_VALUES: Record<VariableKey, Complex> = {
 };
 
 export const defaultEquationSource = `return ops.add(ops.pow(z, exponent), c);`;
+export const LOG_EQUATION_SOURCE = `return ops.log(ops.add(ops.pow(z, exponent), c));`;
 export const FEATHER_EQUATION_SOURCE = `
 const numerator = ops.pow(z, 3);
 const denom = 1 + Math.pow(ops.magnitude(z), 2);

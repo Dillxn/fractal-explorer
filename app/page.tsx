@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FEATHER_EQUATION_SOURCE,
   INITIAL_MANUAL_VALUES,
+  LOG_EQUATION_SOURCE,
   OPS,
   compileEquation,
   compileInterior,
@@ -15,7 +16,7 @@ import {
   variableOrder,
 } from "@/lib/fractalMath";
 import type { ColorScheme, Complex, VariableKey } from "@/lib/fractalMath";
-import type { FractalWorkerResponse } from "@/lib/fractalWorkerTypes";
+import type { FractalWorkerResponse, RenderMode } from "@/lib/fractalWorkerTypes";
 
 type ComplexDraft = { re: string; im: string };
 
@@ -25,6 +26,7 @@ const MAX_SCALE = 1e6;
 const MIN_ITERATIONS = 1;
 const MAX_ITERATIONS = 1000;
 const ITERATION_HOTKEY_FACTOR = 1.1;
+const DEFAULT_SOFT_SHARPNESS = 0.15;
 
 type FractalPreset = {
   id: string;
@@ -52,6 +54,16 @@ const FRACTAL_PRESETS: FractalPreset[] = [
     id: "feather",
     label: "Feather Fractal (z^3 / (1 + |z|^2) + c)",
     equation: FEATHER_EQUATION_SOURCE,
+    planeVariable: "c",
+    manualValues: cloneManualValues(INITIAL_MANUAL_VALUES),
+    center: { re: 0, im: 0 },
+    scale: 2.5,
+    activeManualKey: "z",
+  },
+  {
+    id: "log-map",
+    label: "Log Map (log(z^exp + c))",
+    equation: LOG_EQUATION_SOURCE,
     planeVariable: "c",
     manualValues: cloneManualValues(INITIAL_MANUAL_VALUES),
     center: { re: 0, im: 0 },
@@ -90,6 +102,7 @@ function FractalExplorer() {
   const [scale, setScale] = useState(3);
   const [maxIterations, setMaxIterations] = useState(120);
   const [colorScheme, setColorScheme] = useState<ColorScheme>("classic");
+  const [renderMode, setRenderMode] = useState<RenderMode>("escape");
   const [planeVariable, setPlaneVariable] = useState<VariableKey>("c");
   const [manualValues, setManualValues] = useState<Record<VariableKey, Complex>>(() =>
     cloneManualValues(INITIAL_MANUAL_VALUES),
@@ -105,6 +118,7 @@ function FractalExplorer() {
   const [sensitivity, setSensitivity] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [lowPass, setLowPass] = useState(0);
+  const [softSharpness, setSoftSharpness] = useState(DEFAULT_SOFT_SHARPNESS);
   const presetSelectRef = useRef<HTMLSelectElement>(null);
   const [equationInput, setEquationInput] = useState(defaultEquationSource);
   const [equationError, setEquationError] = useState<string | null>(initialCompilation.error);
@@ -143,6 +157,8 @@ function FractalExplorer() {
     setSensitivity(1);
     setRotation(0);
     setLowPass(0);
+    setRenderMode("escape");
+    setSoftSharpness(DEFAULT_SOFT_SHARPNESS);
   }, [applyPreset, presetId]);
 
   useEffect(() => {
@@ -571,6 +587,8 @@ function FractalExplorer() {
         planeVariable,
         manualValues,
         colorScheme,
+        renderMode,
+        softSharpness,
         equationSource: equationInput,
         interiorSource: interiorInput,
         rotation,
@@ -595,6 +613,8 @@ function FractalExplorer() {
     interiorError,
     rotation,
     lowPass,
+    renderMode,
+    softSharpness,
   ]);
 
   const zoomLevel = useMemo(() => (3 / scale).toFixed(2), [scale]);
@@ -602,6 +622,7 @@ function FractalExplorer() {
     () => ((rotation * 180) / Math.PI).toFixed(1),
     [rotation],
   );
+  const renderModeLabel = renderMode === "escape" ? "Classic escape" : "Soft escape";
 
   const handleManualDraftChange =
     (key: VariableKey, field: keyof Complex) => (event: ChangeEvent<HTMLInputElement>) => {
@@ -818,6 +839,60 @@ function FractalExplorer() {
                   <option value="ice">Ice</option>
                 </select>
               </div>
+              <div className="col-span-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Render mode</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRenderMode("escape")}
+                    className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
+                      renderMode === "escape"
+                        ? "border-cyan-400 bg-cyan-400/10 text-white"
+                        : "border-white/10 text-slate-300 hover:border-white/30"
+                    }`}
+                  >
+                    Classic escape
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRenderMode("soft")}
+                    className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${
+                      renderMode === "soft"
+                        ? "border-cyan-400 bg-cyan-400/10 text-white"
+                        : "border-white/10 text-slate-300 hover:border-white/30"
+                    }`}
+                  >
+                    Soft escape
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Soft mode keeps iterating, decays a survival weight with a sigmoid past the escape radius, and blends
+                  orbit stats for smoother, differentiable coloring.
+                </p>
+              </div>
+              {renderMode === "soft" && (
+                <div className="col-span-2">
+                  <label
+                    className="text-xs font-semibold uppercase tracking-wide text-slate-400"
+                    htmlFor="soft-sharpness"
+                  >
+                    Survival sharpness ×{softSharpness.toFixed(2)}
+                  </label>
+                  <input
+                    id="soft-sharpness"
+                    type="range"
+                    min={0.05}
+                    max={0.6}
+                    step={0.01}
+                    value={softSharpness}
+                    onChange={(event) => setSoftSharpness(Number(event.target.value))}
+                    className="mt-1 w-full accent-cyan-400"
+                  />
+                  <p className="text-xs text-slate-500">
+                    Lower sharpness extends the soft glow, higher values snap harder toward the escape palette.
+                  </p>
+                </div>
+              )}
             </section>
 
             <section className="mt-4 space-y-1">
@@ -878,6 +953,8 @@ function FractalExplorer() {
         <span>Sensitivity ×{sensitivity.toFixed(2)}</span>
         <span>Rotation {rotationDegrees}°</span>
         <span>Low-pass ×{lowPass.toFixed(2)}</span>
+        <span>Mode {renderModeLabel}</span>
+        {renderMode === "soft" && <span>Soft sharpness ×{softSharpness.toFixed(2)}</span>}
       </div>
     </main>
   );

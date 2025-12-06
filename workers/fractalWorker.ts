@@ -9,6 +9,7 @@ import {
   defaultEquationSource,
   defaultInteriorSource,
   fallbackEvaluator,
+  LOG_EQUATION_SOURCE,
   INTERIOR_HELPERS,
   type OrbitStats,
   type ColorScheme,
@@ -25,8 +26,12 @@ const ctx: DedicatedWorkerGlobalScope = self as DedicatedWorkerGlobalScope;
 
 const DEFAULT_EQUATION_NORMALIZED = normalizeEquation(defaultEquationSource);
 const FEATHER_EQUATION_NORMALIZED = normalizeEquation(FEATHER_EQUATION_SOURCE);
+const LOG_EQUATION_NORMALIZED = normalizeEquation(LOG_EQUATION_SOURCE);
 const DEFAULT_INTERIOR_NORMALIZED = normalizeInterior(defaultInteriorSource);
 const MAX_SHADER_ITERATIONS = 4096;
+const DEFAULT_SOFT_SURVIVAL_SHARPNESS = 0.15;
+const SOFT_SURVIVAL_EPSILON = 1e-6;
+const SOFT_SURVIVAL_OVERFLOW_SCALE = 12;
 
 type GLState = {
   canvas: OffscreenCanvas;
@@ -42,13 +47,15 @@ type GLState = {
     planeVariable: WebGLUniformLocation | null;
     manualZ: WebGLUniformLocation | null;
     manualC: WebGLUniformLocation | null;
-      manualExponent: WebGLUniformLocation | null;
-      colorScheme: WebGLUniformLocation | null;
-      rotation: WebGLUniformLocation | null;
-      equationMode: WebGLUniformLocation | null;
-      lowPass: WebGLUniformLocation | null;
-    };
+    manualExponent: WebGLUniformLocation | null;
+    colorScheme: WebGLUniformLocation | null;
+    rotation: WebGLUniformLocation | null;
+    equationMode: WebGLUniformLocation | null;
+    lowPass: WebGLUniformLocation | null;
+    renderMode: WebGLUniformLocation | null;
+    softSharpness: WebGLUniformLocation | null;
   };
+};
 
 let activeRequestId = 0;
 let glState: GLState | null = null;
@@ -101,6 +108,8 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
   const manualC = payload.manualValues.c;
   const manualExponent = payload.manualValues.exponent;
   const rotation = payload.rotation;
+  const renderModeIndex = payload.renderMode === "soft" ? 1 : 0;
+  const softSharpness = Math.max(0.0001, payload.softSharpness ?? DEFAULT_SOFT_SURVIVAL_SHARPNESS);
 
   if (uniforms.resolution) {
     gl.uniform2f(uniforms.resolution, payload.width, payload.height);
@@ -138,6 +147,12 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
   if (uniforms.lowPass) {
     gl.uniform1f(uniforms.lowPass, Math.min(Math.max(payload.lowPass, 0), 1));
   }
+  if (uniforms.renderMode) {
+    gl.uniform1i(uniforms.renderMode, renderModeIndex);
+  }
+  if (uniforms.softSharpness) {
+    gl.uniform1f(uniforms.softSharpness, softSharpness);
+  }
 
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -169,6 +184,8 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
     colorScheme,
     lowPass,
     rotation,
+    renderMode,
+    softSharpness,
   } = payload;
   const { fn } = compileEquation(payload.equationSource, OPS);
   const evaluator = fn ?? fallbackEvaluator;
@@ -176,12 +193,18 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
 
   const rowsPerChunk = Math.max(2, Math.floor(height / 180));
   const escapeRadius = 16;
+  const escapeThreshold = escapeRadius * escapeRadius;
   const unit = scale / width;
   const manualZ = manualValues.z;
   const manualC = manualValues.c;
   const manualExponent = manualValues.exponent;
   const currentPlane = planeVariable;
   const colorizer = colorizers[colorScheme as ColorScheme] ?? colorizers.classic;
+  const activeRenderMode = renderMode ?? "escape";
+  const survivalSharpness = Math.max(
+    0.001,
+    Number.isFinite(softSharpness) ? softSharpness : DEFAULT_SOFT_SURVIVAL_SHARPNESS,
+  );
   const startTime = performance.now();
   const cosRotation = Math.cos(rotation);
   const sinRotation = Math.sin(rotation);
@@ -209,7 +232,68 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
         const cValue = currentPlane === "c" ? planeValue : manualC;
         const exponentValue = currentPlane === "exponent" ? planeValue : manualExponent;
         const startZValue = currentPlane === "z" ? planeValue : manualZ;
-        let z: Complex = { re: startZValue.re, im: startZValue.im };
+        const initialZ: Complex = { re: startZValue.re, im: startZValue.im };
+        const pixelIndex = (y * width + x) * 4;
+
+        if (activeRenderMode === "soft") {
+          let z: Complex = { re: initialZ.re, im: initialZ.im };
+          let survival = 1;
+          let orbitLength = 0;
+          let orbitMagnitudeSum = 0;
+          let orbitAngleSum = 0;
+          let orbitMaxMagnitude = 0;
+
+          for (let iter = 0; iter < maxIterations; iter += 1) {
+            z = evaluator(z, cValue, exponentValue);
+            if (!Number.isFinite(z.re) || !Number.isFinite(z.im)) {
+              survival = 0;
+              break;
+            }
+            const magnitude = Math.hypot(z.re, z.im);
+            const angle = Math.atan2(z.im, z.re);
+            const weight = survival;
+            orbitMagnitudeSum += weight * magnitude;
+            orbitAngleSum += weight * angle;
+            orbitMaxMagnitude = Math.max(orbitMaxMagnitude, weight * magnitude);
+            orbitLength += weight;
+
+            if (magnitude > escapeRadius) {
+              const normalizedOverflow = (magnitude - escapeRadius) / escapeRadius;
+              const scaledOverflow = normalizedOverflow * SOFT_SURVIVAL_OVERFLOW_SCALE;
+              const sigmoid = 1 / (1 + Math.exp(-survivalSharpness * scaledOverflow));
+              const decayMultiplier = Math.max(0, Math.min(1, 2 * (1 - sigmoid)));
+              survival *= decayMultiplier;
+            }
+            if (survival <= SOFT_SURVIVAL_EPSILON) {
+              survival = 0;
+              break;
+            }
+          }
+
+          const survivalClamped = Math.max(0, Math.min(1, survival));
+          const escapeWeight = 1 - survivalClamped;
+          const orbit: OrbitStats = {
+            length: Math.max(orbitLength, SOFT_SURVIVAL_EPSILON),
+            magnitudeSum: orbitMagnitudeSum,
+            angleSum: orbitAngleSum,
+            maxMagnitude: orbitMaxMagnitude,
+            last: z,
+          };
+          const interiorColor = interiorFn
+            ? interiorFn(orbit, OPS, INTERIOR_HELPERS)
+            : getDefaultInteriorColor(orbit);
+          const [escapeR, escapeG, escapeB] = colorizer(escapeWeight);
+          const blendedR = interiorColor.r * survivalClamped + escapeR * escapeWeight;
+          const blendedG = interiorColor.g * survivalClamped + escapeG * escapeWeight;
+          const blendedB = interiorColor.b * survivalClamped + escapeB * escapeWeight;
+          buffer[pixelIndex] = applyLowPass(blendedR, 0);
+          buffer[pixelIndex + 1] = applyLowPass(blendedG, 1);
+          buffer[pixelIndex + 2] = applyLowPass(blendedB, 2);
+          buffer[pixelIndex + 3] = 255;
+          continue;
+        }
+
+        let z: Complex = { re: initialZ.re, im: initialZ.im };
         let orbitLength = 0;
         let orbitMagnitudeSum = 0;
         let orbitAngleSum = 0;
@@ -227,13 +311,12 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
             iter = maxIterations;
             break;
           }
-          if (z.re * z.re + z.im * z.im > escapeRadius) {
+          if (z.re * z.re + z.im * z.im > escapeThreshold) {
             break;
           }
         }
 
-        const pixelIndex = (y * width + x) * 4;
-        if (iter === maxIterations && interiorFn) {
+        if (iter === maxIterations) {
           const orbit: OrbitStats = {
             length: orbitLength,
             magnitudeSum: orbitMagnitudeSum,
@@ -241,7 +324,9 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
             maxMagnitude: orbitMaxMagnitude,
             last: z,
           };
-          const color = interiorFn(orbit, OPS, INTERIOR_HELPERS);
+          const color = interiorFn
+            ? interiorFn(orbit, OPS, INTERIOR_HELPERS)
+            : getDefaultInteriorColor(orbit);
           buffer[pixelIndex] = applyLowPass(color.r, 0);
           buffer[pixelIndex + 1] = applyLowPass(color.g, 1);
           buffer[pixelIndex + 2] = applyLowPass(color.b, 2);
@@ -307,6 +392,8 @@ function ensureGlState(width: number, height: number): GLState {
 
     const float ESCAPE_RADIUS = 16.0;
     const float EPSILON = 1e-9;
+    const float SOFT_SURVIVAL_EPSILON = 1e-6;
+    const float SOFT_SURVIVAL_OVERFLOW_SCALE = 12.0;
     const int MAX_ITER = ${MAX_SHADER_ITERATIONS};
 
     uniform vec2 uResolution;
@@ -321,6 +408,8 @@ function ensureGlState(width: number, height: number): GLState {
     uniform float uRotation;
     uniform int uEquationMode;
     uniform float uLowPass;
+    uniform int uRenderMode;
+    uniform float uSoftSharpness;
 
     vec2 complexMul(vec2 a, vec2 b) {
       return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -345,6 +434,12 @@ function ensureGlState(width: number, height: number): GLState {
       float magnitude = exp(exponent.x * logR - exponent.y * theta);
       float angle = exponent.y * logR + exponent.x * theta;
       return vec2(magnitude * cos(angle), magnitude * sin(angle));
+    }
+
+    vec2 complexLog(vec2 z) {
+      float r = length(z);
+      float theta = atan(z.y, z.x);
+      return vec2(log(max(r, 1e-12)), theta);
     }
 
     vec3 hsl2rgb(float h, float s, float l) {
@@ -380,11 +475,26 @@ function ensureGlState(width: number, height: number): GLState {
       return hsl2rgb(200.0 + 120.0 * t, 0.65, 0.5);
     }
 
+    vec3 interiorColorFromStats(float orbitCount, float orbitMagSum, float orbitAngleSum, float orbitMaxMag, float epsilon) {
+      float samples = max(orbitCount, epsilon);
+      float avgMag = orbitMagSum / samples;
+      float meanAngle = orbitAngleSum / samples;
+      float hue = 210.0 + 90.0 * sin(meanAngle);
+      float saturation = 0.5 + 0.3 * min(1.0, orbitMaxMag / 4.0);
+      float lightness = 0.25 + 0.5 * min(1.0, avgMag / 3.0);
+      return hsl2rgb(hue, saturation, lightness);
+    }
+
     vec2 iterateEquation(vec2 currentZ, vec2 cValue, vec2 exponentValue, int mode) {
       if (mode == 1) {
         vec2 numerator = complexPow(currentZ, vec2(3.0, 0.0));
         float denom = max(1e-6, 1.0 + dot(currentZ, currentZ));
         return complexAdd(numerator / denom, cValue);
+      }
+      if (mode == 2) {
+        vec2 powResult = complexPow(currentZ, exponentValue);
+        vec2 sum = complexAdd(powResult, cValue);
+        return complexLog(sum);
       }
       return complexAdd(complexPow(currentZ, exponentValue), cValue);
     }
@@ -413,42 +523,87 @@ function ensureGlState(width: number, height: number): GLState {
       exponentValue = planeValue;
     }
 
-    vec2 z = zValue;
-    int iter = 0;
-    float orbitCount = 0.0;
-    float orbitMagSum = 0.0;
-    float orbitAngleSum = 0.0;
-    float orbitMaxMag = 0.0;
-
-    for (int i = 0; i < MAX_ITER; i++) {
-      if (i >= uMaxIterations) {
-        break;
-      }
-        z = iterateEquation(z, cValue, exponentValue, uEquationMode);
-      float magnitude = length(z);
-      orbitMagSum += magnitude;
-      orbitAngleSum += atan(z.y, z.x);
-      orbitMaxMag = max(orbitMaxMag, magnitude);
-      orbitCount += 1.0;
-      if (dot(z, z) > ESCAPE_RADIUS * ESCAPE_RADIUS) {
-        iter = i;
-        break;
-      }
-      iter = i + 1;
-    }
-
     vec3 rgb;
-    if (iter >= uMaxIterations) {
-      float samples = max(orbitCount, 1.0);
-      float avgMag = orbitMagSum / samples;
-      float meanAngle = orbitAngleSum / samples;
-      float hue = 210.0 + 90.0 * sin(meanAngle);
-      float saturation = 0.5 + 0.3 * min(1.0, orbitMaxMag / 4.0);
-      float lightness = 0.25 + 0.5 * min(1.0, avgMag / 3.0);
-      rgb = hsl2rgb(hue, saturation, lightness);
+    if (uRenderMode == 1) {
+      vec2 z = zValue;
+      float survival = 1.0;
+      float orbitCountSoft = 0.0;
+      float orbitMagSumSoft = 0.0;
+      float orbitAngleSumSoft = 0.0;
+      float orbitMaxMagSoft = 0.0;
+
+      for (int i = 0; i < MAX_ITER; i++) {
+        if (i >= uMaxIterations) {
+          break;
+        }
+        z = iterateEquation(z, cValue, exponentValue, uEquationMode);
+        if (abs(z.x) > 1e12 || abs(z.y) > 1e12) {
+          survival = 0.0;
+          break;
+        }
+        float magnitude = length(z);
+        float angle = atan(z.y, z.x);
+        float weight = survival;
+        orbitMagSumSoft += weight * magnitude;
+        orbitAngleSumSoft += weight * angle;
+        orbitMaxMagSoft = max(orbitMaxMagSoft, weight * magnitude);
+        orbitCountSoft += weight;
+
+        if (magnitude > ESCAPE_RADIUS) {
+          float normalizedOverflow = (magnitude - ESCAPE_RADIUS) / ESCAPE_RADIUS;
+          float scaledOverflow = normalizedOverflow * SOFT_SURVIVAL_OVERFLOW_SCALE;
+          float sigmoid = 1.0 / (1.0 + exp(-uSoftSharpness * scaledOverflow));
+          float decayMultiplier = clamp(2.0 * (1.0 - sigmoid), 0.0, 1.0);
+          survival *= decayMultiplier;
+        }
+        if (survival <= SOFT_SURVIVAL_EPSILON) {
+          survival = 0.0;
+          break;
+        }
+      }
+
+      float survivalClamped = clamp(survival, 0.0, 1.0);
+      float escapeWeight = 1.0 - survivalClamped;
+      vec3 interiorRgb = interiorColorFromStats(
+        orbitCountSoft,
+        orbitMagSumSoft,
+        orbitAngleSumSoft,
+        orbitMaxMagSoft,
+        SOFT_SURVIVAL_EPSILON
+      );
+      vec3 escapeRgb = colorize(escapeWeight, uColorScheme);
+      rgb = interiorRgb * survivalClamped + escapeRgb * escapeWeight;
     } else {
-      float shade = float(iter) / float(uMaxIterations);
-      rgb = colorize(shade, uColorScheme);
+      vec2 z = zValue;
+      int iter = 0;
+      float orbitCount = 0.0;
+      float orbitMagSum = 0.0;
+      float orbitAngleSum = 0.0;
+      float orbitMaxMag = 0.0;
+
+      for (int i = 0; i < MAX_ITER; i++) {
+        if (i >= uMaxIterations) {
+          break;
+        }
+        z = iterateEquation(z, cValue, exponentValue, uEquationMode);
+        float magnitude = length(z);
+        orbitMagSum += magnitude;
+        orbitAngleSum += atan(z.y, z.x);
+        orbitMaxMag = max(orbitMaxMag, magnitude);
+        orbitCount += 1.0;
+        if (dot(z, z) > ESCAPE_RADIUS * ESCAPE_RADIUS) {
+          iter = i;
+          break;
+        }
+        iter = i + 1;
+      }
+
+      if (iter >= uMaxIterations) {
+        rgb = interiorColorFromStats(orbitCount, orbitMagSum, orbitAngleSum, orbitMaxMag, 1.0);
+      } else {
+        float shade = float(iter) / float(uMaxIterations);
+        rgb = colorize(shade, uColorScheme);
+      }
     }
 
     rgb = mix(rgb, LOW_PASS_BASE, clamp(uLowPass, 0.0, 1.0));
@@ -494,6 +649,8 @@ function ensureGlState(width: number, height: number): GLState {
       rotation: gl.getUniformLocation(program, "uRotation"),
       equationMode: gl.getUniformLocation(program, "uEquationMode"),
       lowPass: gl.getUniformLocation(program, "uLowPass"),
+      renderMode: gl.getUniformLocation(program, "uRenderMode"),
+      softSharpness: gl.getUniformLocation(program, "uSoftSharpness"),
     },
   };
 
@@ -546,6 +703,9 @@ function getEquationMode(normalized: string): number | null {
   if (normalized === FEATHER_EQUATION_NORMALIZED) {
     return 1;
   }
+  if (normalized === LOG_EQUATION_NORMALIZED) {
+    return 2;
+  }
   return null;
 }
 function planeVariableToIndex(variable: VariableKey) {
@@ -570,6 +730,17 @@ function colorSchemeToIndex(colorScheme: ColorScheme) {
     default:
       return 0;
   }
+}
+
+function getDefaultInteriorColor(orbit: OrbitStats) {
+  const length = Math.max(orbit.length, 1);
+  const avgMagnitude = orbit.magnitudeSum / length;
+  const meanAngle = orbit.angleSum / length;
+  const hue = 210 + 90 * Math.sin(meanAngle);
+  const saturation = 0.5 + 0.3 * Math.min(1, orbit.maxMagnitude / 4);
+  const lightness = 0.25 + 0.5 * Math.min(1, avgMagnitude / 3);
+  const [r, g, b] = INTERIOR_HELPERS.hslToRgb(hue, saturation, lightness);
+  return { r, g, b };
 }
 
 export {};
