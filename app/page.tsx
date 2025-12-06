@@ -685,7 +685,7 @@ function FractalExplorer() {
 
       <div className="relative z-10 flex min-h-screen flex-col">
         <div className="flex justify-end p-4">
-          <aside className="pointer-events-auto w-full max-w-xl rounded-2xl border border-white/10 bg-black/70 p-4 text-sm shadow-2xl backdrop-blur">
+          <aside className="pointer-events-auto w-full max-w-xl rounded-2xl border border-white/10 bg-black/70 p-4 text-sm shadow-2xl backdrop-blur max-h-[calc(100vh-2rem)] overflow-y-auto">
             <header className="space-y-1">
               <div className="flex items-center justify-between">
                 <h1 className="text-lg font-semibold tracking-tight">Fractal Explorer</h1>
