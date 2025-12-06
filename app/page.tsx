@@ -10,8 +10,10 @@ import {
   OPS,
   compileEquation,
   compileInterior,
+  compileExterior,
   defaultEquationSource,
   defaultInteriorSource,
+  defaultExteriorSource,
   variableLabels,
   variableOrder,
 } from "@/lib/fractalMath";
@@ -119,11 +121,15 @@ function FractalExplorer() {
   const [rotation, setRotation] = useState(0);
   const [lowPass, setLowPass] = useState(0);
   const [softSharpness, setSoftSharpness] = useState(DEFAULT_SOFT_SHARPNESS);
+  const [spinInteriorColoring, setSpinInteriorColoring] = useState(false);
+  const [spinExteriorColoring, setSpinExteriorColoring] = useState(false);
   const presetSelectRef = useRef<HTMLSelectElement>(null);
   const [equationInput, setEquationInput] = useState(defaultEquationSource);
   const [equationError, setEquationError] = useState<string | null>(initialCompilation.error);
   const [interiorInput, setInteriorInput] = useState(defaultInteriorSource);
   const [interiorError, setInteriorError] = useState<string | null>(null);
+  const [exteriorInput, setExteriorInput] = useState(defaultExteriorSource);
+  const [exteriorError, setExteriorError] = useState<string | null>(null);
   const [isRendering, setIsRendering] = useState(false);
   const [renderTime, setRenderTime] = useState<number | null>(null);
   const [presetId, setPresetId] = useState<string>("mandelbrot");
@@ -159,6 +165,10 @@ function FractalExplorer() {
     setLowPass(0);
     setRenderMode("escape");
     setSoftSharpness(DEFAULT_SOFT_SHARPNESS);
+    setSpinInteriorColoring(false);
+    setSpinExteriorColoring(false);
+    setExteriorInput(defaultExteriorSource);
+    setExteriorError(null);
   }, [applyPreset, presetId]);
 
   useEffect(() => {
@@ -260,6 +270,15 @@ function FractalExplorer() {
       setInteriorError(error ?? "Failed to compile interior function.");
     }
   }, [interiorInput]);
+
+  useEffect(() => {
+    const { fn, error } = compileExterior(exteriorInput, OPS);
+    if (fn) {
+      setExteriorError(null);
+    } else {
+      setExteriorError(error ?? "Failed to compile exterior function.");
+    }
+  }, [exteriorInput]);
 
   useEffect(() => {
     const container = canvasContainerRef.current;
@@ -532,7 +551,7 @@ function FractalExplorer() {
     if (!canvas || !canvasSize.width || !canvasSize.height || !worker) {
       return;
     }
-    if (equationError) {
+    if (equationError || interiorError || exteriorError) {
       setIsRendering(false);
       return;
     }
@@ -589,8 +608,11 @@ function FractalExplorer() {
         colorScheme,
         renderMode,
         softSharpness,
+        spinInteriorColoring,
+        spinExteriorColoring,
         equationSource: equationInput,
         interiorSource: interiorInput,
+        exteriorSource: exteriorInput,
         rotation,
         lowPass,
       },
@@ -611,10 +633,14 @@ function FractalExplorer() {
     equationError,
     interiorInput,
     interiorError,
+    exteriorInput,
+    exteriorError,
     rotation,
     lowPass,
     renderMode,
     softSharpness,
+    spinInteriorColoring,
+    spinExteriorColoring,
   ]);
 
   const zoomLevel = useMemo(() => (3 / scale).toFixed(2), [scale]);
@@ -799,6 +825,26 @@ function FractalExplorer() {
                     <code>helpers.hslToRgb</code>.
                   </p>
                 </section>
+
+                <section className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-400" htmlFor="exterior">
+                    Exterior color mapper
+                  </label>
+                  <textarea
+                    id="exterior"
+                    spellCheck={false}
+                    value={exteriorInput}
+                    onChange={(event) => setExteriorInput(event.target.value)}
+                    className="h-32 w-full rounded-xl border border-white/10 bg-black/60 p-3 font-mono text-xs text-slate-100 outline-none focus:border-cyan-400"
+                  />
+                  {exteriorError && <p className="text-xs text-red-300">Exterior error: {exteriorError}</p>}
+                  <p className="text-xs text-slate-400">
+                    Runs when a point contributes to the escape palette (classic or soft). You receive
+                    <code>sample</code> with <code>iter</code>, <code>maxIterations</code>, <code>shade</code>,
+                    <code>escapeWeight</code>, plus <code>orbit</code> stats. Use <code>helpers.palette(t)</code> to sample
+                    the active scheme or <code>helpers.hslToRgb</code> for custom gradients.
+                  </p>
+                </section>
               </div>
             </div>
             <section className="mt-4 grid grid-cols-2 gap-3">
@@ -838,6 +884,37 @@ function FractalExplorer() {
                   <option value="fire">Fire</option>
                   <option value="ice">Ice</option>
                 </select>
+              </div>
+              <div className="col-span-2 rounded-xl border border-white/10 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Spin coloring</p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSpinInteriorColoring((prev) => !prev)}
+                    className={`rounded-lg border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide transition ${
+                      spinInteriorColoring
+                        ? "border-cyan-400 bg-cyan-400/10 text-white"
+                        : "border-white/10 text-slate-300 hover:border-white/30"
+                    }`}
+                  >
+                    Interior: {spinInteriorColoring ? "Spin" : "Classic"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSpinExteriorColoring((prev) => !prev)}
+                    className={`rounded-lg border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide transition ${
+                      spinExteriorColoring
+                        ? "border-cyan-400 bg-cyan-400/10 text-white"
+                        : "border-white/10 text-slate-300 hover:border-white/30"
+                    }`}
+                  >
+                    Exterior: {spinExteriorColoring ? "Spin" : "Classic"}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Interior spin replaces the non-escaping color with orbit statistics, while exterior spin swaps the
+                  escape palette for the same stats-based hues.
+                </p>
               </div>
               <div className="col-span-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Render mode</p>
@@ -955,6 +1032,8 @@ function FractalExplorer() {
         <span>Low-pass ×{lowPass.toFixed(2)}</span>
         <span>Mode {renderModeLabel}</span>
         {renderMode === "soft" && <span>Soft sharpness ×{softSharpness.toFixed(2)}</span>}
+        {spinInteriorColoring && <span>Spin interior</span>}
+        {spinExteriorColoring && <span>Spin exterior</span>}
       </div>
     </main>
   );

@@ -5,9 +5,12 @@ import {
   colorizers,
   compileEquation,
   compileInterior,
+  compileExterior,
+  createExteriorHelpers,
   FEATHER_EQUATION_SOURCE,
   defaultEquationSource,
   defaultInteriorSource,
+  defaultExteriorSource,
   fallbackEvaluator,
   LOG_EQUATION_SOURCE,
   INTERIOR_HELPERS,
@@ -15,6 +18,7 @@ import {
   type ColorScheme,
   type Complex,
   type VariableKey,
+  type ExteriorSample,
 } from "@/lib/fractalMath";
 import type {
   FractalRenderPayload,
@@ -28,6 +32,7 @@ const DEFAULT_EQUATION_NORMALIZED = normalizeEquation(defaultEquationSource);
 const FEATHER_EQUATION_NORMALIZED = normalizeEquation(FEATHER_EQUATION_SOURCE);
 const LOG_EQUATION_NORMALIZED = normalizeEquation(LOG_EQUATION_SOURCE);
 const DEFAULT_INTERIOR_NORMALIZED = normalizeInterior(defaultInteriorSource);
+const DEFAULT_EXTERIOR_NORMALIZED = normalizeExterior(defaultExteriorSource);
 const MAX_SHADER_ITERATIONS = 4096;
 const DEFAULT_SOFT_SURVIVAL_SHARPNESS = 0.15;
 const SOFT_SURVIVAL_EPSILON = 1e-6;
@@ -54,6 +59,8 @@ type GLState = {
     lowPass: WebGLUniformLocation | null;
     renderMode: WebGLUniformLocation | null;
     softSharpness: WebGLUniformLocation | null;
+    spinInterior: WebGLUniformLocation | null;
+    spinExterior: WebGLUniformLocation | null;
   };
 };
 
@@ -70,12 +77,14 @@ ctx.onmessage = (event: MessageEvent<FractalWorkerRequest>) => {
   const payload = data.payload;
   const normalizedEquation = normalizeEquation(payload.equationSource);
   const normalizedInterior = normalizeInterior(payload.interiorSource);
+  const normalizedExterior = normalizeExterior(payload.exteriorSource);
   const equationMode = getEquationMode(normalizedEquation);
 
   const useWebGL =
     typeof OffscreenCanvas !== "undefined" &&
     equationMode !== null &&
     normalizedInterior === DEFAULT_INTERIOR_NORMALIZED &&
+    normalizedExterior === DEFAULT_EXTERIOR_NORMALIZED &&
     payload.maxIterations <= MAX_SHADER_ITERATIONS;
 
   if (useWebGL) {
@@ -110,6 +119,8 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
   const rotation = payload.rotation;
   const renderModeIndex = payload.renderMode === "soft" ? 1 : 0;
   const softSharpness = Math.max(0.0001, payload.softSharpness ?? DEFAULT_SOFT_SURVIVAL_SHARPNESS);
+  const spinInteriorFlag = payload.spinInteriorColoring ? 1 : 0;
+  const spinExteriorFlag = payload.spinExteriorColoring ? 1 : 0;
 
   if (uniforms.resolution) {
     gl.uniform2f(uniforms.resolution, payload.width, payload.height);
@@ -153,6 +164,12 @@ function renderWithWebGL(payload: FractalRenderPayload, id: number, equationMode
   if (uniforms.softSharpness) {
     gl.uniform1f(uniforms.softSharpness, softSharpness);
   }
+  if (uniforms.spinInterior) {
+    gl.uniform1i(uniforms.spinInterior, spinInteriorFlag);
+  }
+  if (uniforms.spinExterior) {
+    gl.uniform1i(uniforms.spinExterior, spinExteriorFlag);
+  }
 
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -186,10 +203,14 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
     rotation,
     renderMode,
     softSharpness,
+    spinInteriorColoring,
+    spinExteriorColoring,
+    exteriorSource,
   } = payload;
   const { fn } = compileEquation(payload.equationSource, OPS);
   const evaluator = fn ?? fallbackEvaluator;
   const { fn: interiorFn } = compileInterior(payload.interiorSource, OPS);
+  const { fn: exteriorFn } = compileExterior(exteriorSource, OPS);
 
   const rowsPerChunk = Math.max(2, Math.floor(height / 180));
   const escapeRadius = 16;
@@ -200,6 +221,10 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
   const manualExponent = manualValues.exponent;
   const currentPlane = planeVariable;
   const colorizer = colorizers[colorScheme as ColorScheme] ?? colorizers.classic;
+  const neutralInteriorColor = getNeutralInteriorColor(colorizer);
+  const exteriorHelpers = createExteriorHelpers((t: number) =>
+    colorizer(Math.max(0, Math.min(1, t))),
+  );
   const activeRenderMode = renderMode ?? "escape";
   const survivalSharpness = Math.max(
     0.001,
@@ -212,6 +237,14 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
   const lowPassBase = [8, 12, 16];
   const applyLowPass = (value: number, index: number) =>
     Math.round(value * (1 - clampedLowPass) + lowPassBase[index] * clampedLowPass);
+
+  const getExteriorColor = (sample: ExteriorSample) => {
+    if (exteriorFn) {
+      return exteriorFn(sample, OPS, exteriorHelpers);
+    }
+    const [r, g, b] = colorizer(Math.max(0, Math.min(1, sample.shade)));
+    return { r, g, b };
+  };
 
   for (let startY = 0; startY < height; startY += rowsPerChunk) {
     if (id !== activeRequestId) {
@@ -279,13 +312,20 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
             maxMagnitude: orbitMaxMagnitude,
             last: z,
           };
-          const interiorColor = interiorFn
-            ? interiorFn(orbit, OPS, INTERIOR_HELPERS)
-            : getDefaultInteriorColor(orbit);
-          const [escapeR, escapeG, escapeB] = colorizer(escapeWeight);
-          const blendedR = interiorColor.r * survivalClamped + escapeR * escapeWeight;
-          const blendedG = interiorColor.g * survivalClamped + escapeG * escapeWeight;
-          const blendedB = interiorColor.b * survivalClamped + escapeB * escapeWeight;
+          const statsColor = getDefaultInteriorColor(orbit);
+          const interiorBase = interiorFn ? interiorFn(orbit, OPS, INTERIOR_HELPERS) : neutralInteriorColor;
+          const interiorColor = spinInteriorColoring ? statsColor : interiorBase;
+          const exteriorSample: ExteriorSample = {
+            iter: maxIterations,
+            maxIterations,
+            shade: escapeWeight,
+            escapeWeight,
+            orbit,
+          };
+          const exteriorColor = spinExteriorColoring ? statsColor : getExteriorColor(exteriorSample);
+          const blendedR = interiorColor.r * survivalClamped + exteriorColor.r * escapeWeight;
+          const blendedG = interiorColor.g * survivalClamped + exteriorColor.g * escapeWeight;
+          const blendedB = interiorColor.b * survivalClamped + exteriorColor.b * escapeWeight;
           buffer[pixelIndex] = applyLowPass(blendedR, 0);
           buffer[pixelIndex + 1] = applyLowPass(blendedG, 1);
           buffer[pixelIndex + 2] = applyLowPass(blendedB, 2);
@@ -315,28 +355,35 @@ function renderWithCpu(payload: FractalRenderPayload, id: number) {
             break;
           }
         }
+        const orbit: OrbitStats = {
+          length: orbitLength,
+          magnitudeSum: orbitMagnitudeSum,
+          angleSum: orbitAngleSum,
+          maxMagnitude: orbitMaxMagnitude,
+          last: z,
+        };
+        const statsColor = getDefaultInteriorColor(orbit);
 
         if (iter === maxIterations) {
-          const orbit: OrbitStats = {
-            length: orbitLength,
-            magnitudeSum: orbitMagnitudeSum,
-            angleSum: orbitAngleSum,
-            maxMagnitude: orbitMaxMagnitude,
-            last: z,
-          };
-          const color = interiorFn
-            ? interiorFn(orbit, OPS, INTERIOR_HELPERS)
-            : getDefaultInteriorColor(orbit);
+          const baseInterior = interiorFn ? interiorFn(orbit, OPS, INTERIOR_HELPERS) : neutralInteriorColor;
+          const color = spinInteriorColoring ? statsColor : baseInterior;
           buffer[pixelIndex] = applyLowPass(color.r, 0);
           buffer[pixelIndex + 1] = applyLowPass(color.g, 1);
           buffer[pixelIndex + 2] = applyLowPass(color.b, 2);
           buffer[pixelIndex + 3] = 255;
         } else {
           const shade = iter / maxIterations;
-          const [r, g, b] = colorizer(shade);
-          buffer[pixelIndex] = applyLowPass(r, 0);
-          buffer[pixelIndex + 1] = applyLowPass(g, 1);
-          buffer[pixelIndex + 2] = applyLowPass(b, 2);
+          const exteriorSample: ExteriorSample = {
+            iter,
+            maxIterations,
+            shade,
+            escapeWeight: shade,
+            orbit,
+          };
+          const color = spinExteriorColoring ? statsColor : getExteriorColor(exteriorSample);
+          buffer[pixelIndex] = applyLowPass(color.r, 0);
+          buffer[pixelIndex + 1] = applyLowPass(color.g, 1);
+          buffer[pixelIndex + 2] = applyLowPass(color.b, 2);
           buffer[pixelIndex + 3] = 255;
         }
       }
@@ -410,6 +457,8 @@ function ensureGlState(width: number, height: number): GLState {
     uniform float uLowPass;
     uniform int uRenderMode;
     uniform float uSoftSharpness;
+    uniform int uSpinInterior;
+    uniform int uSpinExterior;
 
     vec2 complexMul(vec2 a, vec2 b) {
       return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
@@ -564,15 +613,20 @@ function ensureGlState(width: number, height: number): GLState {
 
       float survivalClamped = clamp(survival, 0.0, 1.0);
       float escapeWeight = 1.0 - survivalClamped;
-      vec3 interiorRgb = interiorColorFromStats(
+      vec3 statsRgb = interiorColorFromStats(
         orbitCountSoft,
         orbitMagSumSoft,
         orbitAngleSumSoft,
         orbitMaxMagSoft,
         SOFT_SURVIVAL_EPSILON
       );
-      vec3 escapeRgb = colorize(escapeWeight, uColorScheme);
-      rgb = interiorRgb * survivalClamped + escapeRgb * escapeWeight;
+      vec3 interiorRgb = (uSpinInterior == 1)
+        ? statsRgb
+        : colorize(0.0, uColorScheme);
+      vec3 exteriorRgb = (uSpinExterior == 1)
+        ? statsRgb
+        : colorize(escapeWeight, uColorScheme);
+      rgb = interiorRgb * survivalClamped + exteriorRgb * escapeWeight;
     } else {
       vec2 z = zValue;
       int iter = 0;
@@ -598,11 +652,17 @@ function ensureGlState(width: number, height: number): GLState {
         iter = i + 1;
       }
 
+      vec3 statsRgb = interiorColorFromStats(orbitCount, orbitMagSum, orbitAngleSum, orbitMaxMag, 1.0);
+
       if (iter >= uMaxIterations) {
-        rgb = interiorColorFromStats(orbitCount, orbitMagSum, orbitAngleSum, orbitMaxMag, 1.0);
+        rgb = (uSpinInterior == 1)
+          ? statsRgb
+          : colorize(0.0, uColorScheme);
       } else {
         float shade = float(iter) / float(uMaxIterations);
-        rgb = colorize(shade, uColorScheme);
+        rgb = (uSpinExterior == 1)
+          ? statsRgb
+          : colorize(shade, uColorScheme);
       }
     }
 
@@ -651,6 +711,8 @@ function ensureGlState(width: number, height: number): GLState {
       lowPass: gl.getUniformLocation(program, "uLowPass"),
       renderMode: gl.getUniformLocation(program, "uRenderMode"),
       softSharpness: gl.getUniformLocation(program, "uSoftSharpness"),
+      spinInterior: gl.getUniformLocation(program, "uSpinInterior"),
+      spinExterior: gl.getUniformLocation(program, "uSpinExterior"),
     },
   };
 
@@ -693,6 +755,10 @@ function normalizeEquation(source: string) {
 }
 
 function normalizeInterior(source: string) {
+  return normalizeEquation(source);
+}
+
+function normalizeExterior(source: string) {
   return normalizeEquation(source);
 }
 
@@ -740,6 +806,11 @@ function getDefaultInteriorColor(orbit: OrbitStats) {
   const saturation = 0.5 + 0.3 * Math.min(1, orbit.maxMagnitude / 4);
   const lightness = 0.25 + 0.5 * Math.min(1, avgMagnitude / 3);
   const [r, g, b] = INTERIOR_HELPERS.hslToRgb(hue, saturation, lightness);
+  return { r, g, b };
+}
+
+function getNeutralInteriorColor(colorizer: (t: number) => [number, number, number]) {
+  const [r, g, b] = colorizer(0);
   return { r, g, b };
 }
 

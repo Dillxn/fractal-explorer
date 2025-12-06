@@ -15,8 +15,11 @@ export type FractalRenderPayload = {
   colorScheme: ColorScheme;
   renderMode: RenderMode;
   softSharpness: number;
+  spinInteriorColoring: boolean;
+  spinExteriorColoring: boolean;
   equationSource: string;
   interiorSource: string;
+  exteriorSource: string;
   rotation: number;
   lowPass: number;
 };

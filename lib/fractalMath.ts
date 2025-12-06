@@ -214,6 +214,71 @@ const [r, g, b] = helpers.hslToRgb(hue, saturation, lightness);
 return { r, g, b };
 `.trim();
 
+export type ExteriorSample = {
+  iter: number;
+  maxIterations: number;
+  shade: number;
+  escapeWeight: number;
+  orbit: OrbitStats;
+};
+
+export type ExteriorHelpers = {
+  palette: (t: number) => [number, number, number];
+  hslToRgb: typeof hslToRgb;
+};
+
+export const createExteriorHelpers = (
+  palette: (t: number) => [number, number, number],
+): ExteriorHelpers => ({
+  palette,
+  hslToRgb,
+});
+
+export type ExteriorEvaluator = (
+  sample: ExteriorSample,
+  ops: ComplexOps,
+  helpers: ExteriorHelpers,
+) => RGB;
+
+export const defaultExteriorSource = `
+const shade = Math.max(0, Math.min(1, sample.shade));
+const [r, g, b] = helpers.palette(shade);
+return { r, g, b };
+`.trim();
+
+export const compileExterior = (source: string, ops: ComplexOps) => {
+  try {
+    const fn = new Function("sample", "ops", "helpers", `"use strict"; ${source}`) as (
+      sample: ExteriorSample,
+      ops: ComplexOps,
+      helpers: ExteriorHelpers,
+    ) => RGB;
+    const testSample: ExteriorSample = {
+      iter: 0,
+      maxIterations: 1,
+      shade: 0,
+      escapeWeight: 0,
+      orbit: {
+        length: 1,
+        magnitudeSum: 1,
+        angleSum: 0,
+        maxMagnitude: 1,
+        last: { re: 0, im: 0 },
+      },
+    };
+    const paletteStub: ExteriorHelpers["palette"] = () => [255, 255, 255];
+    const test = fn(testSample, ops, { palette: paletteStub, hslToRgb });
+    if (!isRgbLike(test)) {
+      throw new Error("Exterior function must return { r, g, b }.");
+    }
+    const evaluator: ExteriorEvaluator = (sample, opsArg, helpersArg) =>
+      sanitizeRgb(fn(sample, opsArg, helpersArg));
+    return { fn: evaluator, error: null as string | null };
+  } catch (error) {
+    return { fn: null, error: (error as Error).message };
+  }
+};
+
 export function isComplexLike(value: unknown): value is Complex {
   return (
     typeof value === "object" &&
