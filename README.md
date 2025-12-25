@@ -23,8 +23,9 @@ Q / E         Adjust active variable (imag)
 U / O         Adjust active variable (real)
 I / K         Adjust secondary variable (imag)
 , / .         Decrease / increase iterations
-[ / ]         Decrease / increase sensitivity
 - / =         Increase / decrease low-pass filter
+[ / ]         Decrease / increase sensitivity
+Shift (hold)  Temporarily double keyboard sensitivity
 R             Reset current preset to its defaults
 ```
 

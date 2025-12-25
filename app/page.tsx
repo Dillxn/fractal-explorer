@@ -206,6 +206,7 @@ function FractalExplorer() {
   useEffect(() => {
     rotationRef.current = rotation;
   }, [rotation]);
+  const shiftHeldRef = useRef(false);
 
   const secondaryManualKey = useMemo(() => {
     if (manualOptions.length < 2) {
@@ -242,6 +243,7 @@ function FractalExplorer() {
       "Q / E: adjust its imaginary part",
       "Arrow left / right: rotate the viewport (counter / clockwise)",
       "[ / ]: adjust keyboard sensitivity",
+      "Hold Shift: temporarily double keyboard sensitivity",
       "R: reset explorer to defaults",
       ", / .: decrease / increase max iterations",
       "- / =: adjust low-pass filter",
@@ -343,6 +345,9 @@ function FractalExplorer() {
       }
 
       const key = event.key.toLowerCase();
+      if (key === "shift") {
+        shiftHeldRef.current = true;
+      }
       if (key === "r") {
         event.preventDefault();
         resetExplorer();
@@ -408,6 +413,9 @@ function FractalExplorer() {
 
     const handleKeyUp = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      if (key === "shift") {
+        shiftHeldRef.current = false;
+      }
       if (movementKeys.has(key)) {
         pressed.delete(key);
       }
@@ -415,7 +423,8 @@ function FractalExplorer() {
 
     const tick = () => {
       if (pressed.size > 0) {
-        const sensitivity = sensitivityRef.current;
+        const sensitivityMultiplier = shiftHeldRef.current ? 2 : 1;
+        const sensitivity = sensitivityRef.current * sensitivityMultiplier;
         const panStep = scaleRef.current * 0.01 * sensitivity;
         let screenDeltaX = 0;
         let screenDeltaY = 0;
@@ -542,6 +551,7 @@ function FractalExplorer() {
         movementRafRef.current = null;
       }
       pressed.clear();
+      shiftHeldRef.current = false;
     };
   }, [resetExplorer]);
 
