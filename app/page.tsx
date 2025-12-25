@@ -14,10 +14,12 @@ import {
   defaultEquationSource,
   defaultInteriorSource,
   defaultExteriorSource,
+  planeVariableLabels,
+  planeVariableOrder,
   variableLabels,
   variableOrder,
 } from "@/lib/fractalMath";
-import type { ColorScheme, Complex, VariableKey } from "@/lib/fractalMath";
+import type { ColorScheme, Complex, PlaneVariable, VariableKey } from "@/lib/fractalMath";
 import type { FractalWorkerResponse, RenderMode } from "@/lib/fractalWorkerTypes";
 
 type ComplexDraft = { re: string; im: string };
@@ -34,7 +36,7 @@ type FractalPreset = {
   id: string;
   label: string;
   equation: string;
-  planeVariable: VariableKey;
+  planeVariable: PlaneVariable;
   manualValues: Record<VariableKey, Complex>;
   center?: Complex;
   scale?: number;
@@ -105,7 +107,7 @@ function FractalExplorer() {
   const [maxIterations, setMaxIterations] = useState(120);
   const [colorScheme, setColorScheme] = useState<ColorScheme>("classic");
   const [renderMode, setRenderMode] = useState<RenderMode>("escape");
-  const [planeVariable, setPlaneVariable] = useState<VariableKey>("c");
+  const [planeVariable, setPlaneVariable] = useState<PlaneVariable>("c");
   const [manualValues, setManualValues] = useState<Record<VariableKey, Complex>>(() =>
     cloneManualValues(INITIAL_MANUAL_VALUES),
   );
@@ -236,7 +238,7 @@ function FractalExplorer() {
       "Arrow up/down: pan vertically",
       "A / D: pan horizontally",
       "W / S: zoom in and out",
-      "X: cycle which variable is driven by X/Y",
+      "X: cycle which variable is driven by X/Y (including none)",
       "U / O: adjust the real part of the active variable",
       "I / K: adjust the other controllable variable (imag axis)",
       "J / L: adjust the other controllable variable (real axis)",
@@ -251,7 +253,7 @@ function FractalExplorer() {
     [],
   );
 
-  const planeLabel = variableLabels[planeVariable];
+  const planeLabel = planeVariableLabels[planeVariable];
   const manualActiveLabel = variableLabels[activeManualKey];
   const manualActiveValue = manualValues[activeManualKey];
 
@@ -404,9 +406,10 @@ function FractalExplorer() {
       if (key === "x") {
         event.preventDefault();
         setPlaneVariable((prev) => {
-          const currentIndex = variableOrder.indexOf(prev);
-          const nextIndex = (currentIndex + 1) % variableOrder.length;
-          return variableOrder[nextIndex];
+          const currentIndex = planeVariableOrder.indexOf(prev);
+          const safeIndex = currentIndex === -1 ? 0 : currentIndex;
+          const nextIndex = (safeIndex + 1) % planeVariableOrder.length;
+          return planeVariableOrder[nextIndex];
         });
       }
     };
@@ -704,7 +707,13 @@ function FractalExplorer() {
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                X/Y currently drive <span className="font-semibold text-slate-200">{planeLabel}</span>.
+                {planeVariable === "none" ? (
+                  "X/Y are not mapped to a variable."
+                ) : (
+                  <>
+                    X/Y currently drive <span className="font-semibold text-slate-200">{planeLabel}</span>.
+                  </>
+                )}
               </p>
             </header>
 
@@ -734,7 +743,7 @@ function FractalExplorer() {
                 <section className="space-y-2">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Plane mapping</p>
                   <div className="grid grid-cols-3 gap-2">
-                    {variableOrder.map((key) => {
+                    {planeVariableOrder.map((key) => {
                       const isActive = planeVariable === key;
                       return (
                         <button
@@ -747,7 +756,7 @@ function FractalExplorer() {
                               : "border-white/10 text-slate-300 hover:border-white/30"
                           }`}
                         >
-                          X/Y → {key.toUpperCase()}
+                          X/Y → {key === "none" ? "NONE" : key.toUpperCase()}
                         </button>
                       );
                     })}

@@ -1,4 +1,4 @@
-import type { ColorScheme, Complex, VariableKey } from "./fractalMath";
+import type { ColorScheme, Complex, PlaneVariable, VariableKey } from "./fractalMath";
 
 export type RenderMode = "escape" | "soft";
 
@@ -10,7 +10,7 @@ export type FractalRenderPayload = {
   center: Complex;
   scale: number;
   maxIterations: number;
-  planeVariable: VariableKey;
+  planeVariable: PlaneVariable;
   manualValues: ManualValues;
   colorScheme: ColorScheme;
   renderMode: RenderMode;

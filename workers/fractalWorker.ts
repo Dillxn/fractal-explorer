@@ -17,7 +17,7 @@ import {
   type OrbitStats,
   type ColorScheme,
   type Complex,
-  type VariableKey,
+  type PlaneVariable,
   type ExteriorSample,
 } from "@/lib/fractalMath";
 import type {
@@ -774,15 +774,17 @@ function getEquationMode(normalized: string): number | null {
   }
   return null;
 }
-function planeVariableToIndex(variable: VariableKey) {
+function planeVariableToIndex(variable: PlaneVariable) {
   switch (variable) {
     case "c":
       return 0;
     case "z":
       return 1;
     case "exponent":
-    default:
       return 2;
+    case "none":
+    default:
+      return 3;
   }
 }
 

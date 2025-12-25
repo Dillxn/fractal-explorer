@@ -2,6 +2,7 @@ export type Complex = { re: number; im: number };
 export type RGB = { r: number; g: number; b: number };
 
 export type VariableKey = "z" | "c" | "exponent";
+export type PlaneVariable = VariableKey | "none";
 
 export const variableOrder: VariableKey[] = ["c", "z", "exponent"];
 
@@ -9,6 +10,15 @@ export const variableLabels: Record<VariableKey, string> = {
   c: "Parameter c",
   z: "Initial z",
   exponent: "Exponent",
+};
+
+export const planeVariableOrder: PlaneVariable[] = ["c", "z", "exponent", "none"];
+
+export const planeVariableLabels: Record<PlaneVariable, string> = {
+  c: "Parameter c",
+  z: "Initial z",
+  exponent: "Exponent",
+  none: "None",
 };
 
 export const INITIAL_MANUAL_VALUES: Record<VariableKey, Complex> = {
