@@ -1,0 +1,90 @@
+name: Real Laya software WebGPU kernel test
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-webgpu-software-test.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch exact public runtime and model
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q playwright==1.55.0
+          mkdir -p www evidence
+          curl -fL --retry 2 --max-time 90 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bvolpato/kevala/actions/artifacts/11001664781/zip -o current.zip
+          unzip -q current.zip -d current
+          tar xf current/kevala-0.1.3.tgz -C www
+          curl -fL --retry 2 --max-time 240 https://huggingface.co/bvolpato/kevala-packs/resolve/45da41504c6c117eca940103e49dd5eb1c3eab4f/laya-q8.kevala -o www/laya-q8.kevala
+          printf '<!doctype html><title>Actual Laya software WebGPU test</title><h1>Real weights and kernels; software GPU</h1><pre id="status">Loading</pre>' > www/index.html
+          python3 - <<'PY'
+          import pathlib,hashlib,json
+          p=pathlib.Path('www/package/js/src/gpu.js')
+          s=p.read_text()
+          guard='if (adapter.info?.isFallbackAdapter || adapter.isFallbackAdapter) throw new Error("the browser selected a software WebGPU adapter instead of a hardware GPU");'
+          assert s.count(guard)==1
+          patched=s.replace(guard,'// TEST ONLY: allow the real SwiftShader software adapter; do not report hardware GPU performance.')
+          p.write_text(patched)
+          pathlib.Path('evidence/test-only-change.json').write_text(json.dumps({'onlyChange':'permit real software adapter for kernel validation; production guard unchanged','beforeSha256':hashlib.sha256(s.encode()).hexdigest(),'afterSha256':hashlib.sha256(patched.encode()).hexdigest(),'removed':guard},indent=2))
+          PY
+          sha256sum www/package/js/src/engine-worker.js www/package/js/src/kevala-simd.wasm www/laya-q8.kevala > evidence/SHA256SUMS.txt
+          if ! command -v google-chrome >/dev/null; then python3 -m playwright install --with-deps chromium; fi
+      - name: Real model load and WebGPU inference
+        shell: bash
+        run: |
+          cat > test_browser.py <<'PY'
+          import json,time,threading,http.server,functools,shutil,traceback,pathlib
+          from playwright.sync_api import sync_playwright
+          server=http.server.ThreadingHTTPServer(('127.0.0.1',8765),functools.partial(http.server.SimpleHTTPRequestHandler,directory='www'))
+          threading.Thread(target=server.serve_forever,daemon=True).start()
+          report={'standIn':False,'backendRequested':'webgpu','physicalGpuBenchmark':False,'testOnlyChange':'removed only the production software-adapter refusal; actual WebGPU API and kernels are unchanged','runtimeRevision':'967d2f4bcf0effb21a76181552a3998fff49bbf7'}
+          with sync_playwright() as p:
+              browser=p.chromium.launch(executable_path=shutil.which('google-chrome'),headless=True,args=['--no-sandbox','--enable-unsafe-webgpu','--use-angle=swiftshader','--enable-features=Vulkan','--use-vulkan=swiftshader','--disable-vulkan-surface'])
+              page=browser.new_page(viewport={'width':1100,'height':800});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+              try:
+                  page.goto('http://127.0.0.1:8765/')
+                  report['browserVersion']=browser.version
+                  report['gpu']=page.evaluate('''async()=>{const a=await navigator.gpu.requestAdapter();return {adapter:!!a,info:a?{vendor:a.info.vendor,architecture:a.info.architecture,description:a.info.description}:null}}''')
+                  started=time.monotonic()
+                  page.evaluate('''async()=>{
+                    const e=await import('/package/js/src/engine-worker.js');if(typeof e.serve!=='function')throw new Error('Missing serve export');
+                    const ch=new MessageChannel();let resolveReady,rejectReady,id=0;const pending=new Map();
+                    const ready=new Promise((r,j)=>{resolveReady=r;rejectReady=j});
+                    ch.port1.onmessage=({data:m})=>{if(m.type==='progress')document.querySelector('#status').textContent=m.message||m.phase;
+                      if(m.type==='ready'){window.modelInfo=m.info;resolveReady()}
+                      if(m.type==='error'){const err=new Error(m.message);if(m.id===undefined)rejectReady(err);else {pending.get(m.id)?.reject(err);pending.delete(m.id)}}
+                      if(m.type==='result'){pending.get(m.id)?.resolve(m);pending.delete(m.id)}};
+                    e.serve(ch.port2);ch.port1.start();
+                    window.actualPredict=(state)=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});ch.port1.postMessage({type:'decide',id:n,requests:[{state,questions:{mutation:{type:'choice',instructions:'Choose the requested next operation.',criteria:{continue:'continue tuning',hold:'make no change'}}}}]})});
+                    window.actualDispose=()=>{e.dispose();ch.port1.close();ch.port2.close()};
+                    ch.port1.postMessage({type:'load',options:{model:location.origin+'/laya-q8.kevala',backend:'webgpu',threads:1,cache:false,cpuKernel:'2x4',gpuKernel:'generic',submit:'split',wasmBase:location.origin+'/package/js/src/'}});
+                    await ready;
+                  }''')
+                  report['loadSeconds']=time.monotonic()-started
+                  report['info']=page.evaluate('window.modelInfo');assert report['info']['backend']=='webgpu'
+                  report['decisions']=page.evaluate('''async()=>{const rows=[];for(let i=0;i<3;i++){const t=performance.now();const r=await actualPredict('Measurement '+i+'. Continue tuning the current experiment.');rows.push({elapsedMs:performance.now()-t,response:r});document.querySelector('#status').textContent=JSON.stringify(rows,null,2)}return rows}''')
+                  assert all(x['response']['responses'][0]['answers']['mutation']['type']=='choice' for x in report['decisions'])
+                  page.screenshot(path='evidence/actual-webgpu.png',full_page=True)
+                  page.evaluate('actualDispose()');report['passed']=True
+              except Exception as e:
+                  report['passed']=False;report['error']=str(e);report['traceback']=traceback.format_exc()
+                  try:page.screenshot(path='evidence/failure.png',full_page=True)
+                  except:pass
+              finally:
+                  report['pageErrors']=errors;pathlib.Path('evidence/browser-results.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));browser.close();server.shutdown()
+          if not report.get('passed'):raise SystemExit(1)
+          PY
+          python3 test_browser.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-software-webgpu-kernel-evidence
+          path: evidence
+          retention-days: 1
