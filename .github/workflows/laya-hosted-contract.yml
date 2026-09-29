@@ -1,0 +1,37 @@
+name: Hosted Laya API contract
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-hosted-contract.yml]
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read public endpoint contract
+        run: |
+          mkdir -p evidence
+          python3 - <<'PY'
+          import urllib.request,json,pathlib,time
+          urls={'info':'https://convaiinnovations-laya-demo.hf.space/gradio_api/info','config':'https://convaiinnovations-laya-demo.hf.space/config','app':'https://huggingface.co/spaces/convaiinnovations/laya-demo/raw/main/app.py'}
+          for name,url in urls.items():
+              try:
+                  req=urllib.request.Request(url,headers={'Origin':'null'})
+                  with urllib.request.urlopen(req,timeout=45) as r:
+                      text=r.read().decode();headers=dict(r.headers)
+                  pathlib.Path('evidence/'+name+'.txt').write_text(text)
+                  pathlib.Path('evidence/'+name+'-headers.json').write_text(json.dumps(headers,indent=2))
+                  if name=='info':print(text[:18000])
+                  elif name=='config':
+                      c=json.loads(text);print(json.dumps({'version':c.get('version'),'dependencies':[d for d in c.get('dependencies',[]) if d.get('api_name')=='run_playground'],'components':[{'id':x['id'],'type':x.get('type'),'props':x.get('props')} for x in c.get('components',[]) if x.get('type') in ['dropdown','checkbox']]}))
+                  print(name,headers.get('access-control-allow-origin'),len(text))
+              except Exception as e:print(name,type(e).__name__,str(e));pathlib.Path('evidence/'+name+'-error.txt').write_text(str(e))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-laya-contract
+          path: evidence
+          retention-days: 1
