@@ -1,0 +1,45 @@
+name: Final hosted Laya client verification
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-hosted-final-client.yml]
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install -q playwright==1.55.0
+      - name: Genuine predictions through the delivered API adapter
+        run: |
+          mkdir -p evidence
+          cat > /tmp/client-test.py <<'PY'
+          import json,pathlib,hashlib,shutil,traceback
+          from playwright.sync_api import sync_playwright
+          client=pathlib.Path('qa/hosted-laya.js').read_text()
+          request={'state':'Rev 0; mode joint. Train acc 0.078 loss 2.535; validation acc 0.031 loss 2.638.\nCandidates: L1 pan_x=0.168; G z0_re=0.','questions':{'mutation':{'type':'choice','instructions':'Select one next bounded mutation using the current measured feedback. Choose hold only when no listed change is justified.','criteria':{'p0up':'L1 pan_x increase','p0down':'L1 pan_x decrease','p24up':'G z0_re increase','p24down':'G z0_re decrease','hold':'hold current parameters'}}}}
+          out={'clientSha256':hashlib.sha256(client.encode()).hexdigest(),'request':request,'scope':'actual delivered client against real hosted Laya, same starting experiment request repeated; this is not a numerical optimization run','modelStandIn':False,'requestInterception':False}
+          with sync_playwright() as p:
+              browser=p.chromium.launch(executable_path=shutil.which('google-chrome') or shutil.which('chromium'),headless=True,args=['--no-sandbox'])
+              page=browser.new_page(viewport={'width':1100,'height':900});out['browser']=browser.version;errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+              page.set_content('<h1>Actual final hosted Laya client</h1><pre id="results"></pre>');page.add_script_tag(content=client)
+              try:
+                  out['samples']=page.evaluate('''async req=>{const rows=[];for(let i=0;i<5;i++){const result=await LayaHosted.predict(req.state,req.questions);rows.push(result);document.querySelector('#results').textContent=JSON.stringify(rows,null,2)}return rows}''',request)
+                  assert len(set(x['hosted']['eventId'] for x in out['samples']))==5
+                  assert all(x['model']=='laya' and x['hosted']['credentials']=='omit' for x in out['samples'])
+                  out['abort']=page.evaluate('''async req=>{const c=new AbortController();const p=LayaHosted.predict(req.state,req.questions,{signal:c.signal});setTimeout(()=>c.abort(new DOMException('Paused','AbortError')),1);try{await p;return {rejected:false}}catch(e){return {rejected:true,name:e.name}}}''',request)
+                  assert out['abort']=={'rejected':True,'name':'AbortError'}
+                  out['passed']=True;page.screenshot(path='evidence/final-hosted-client.png',full_page=True)
+              except Exception as e:out['passed']=False;out['error']=str(e);out['traceback']=traceback.format_exc()
+              finally:out['pageErrors']=errors;pathlib.Path('evidence/final-hosted-client.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2));browser.close()
+          if not out.get('passed'):raise SystemExit(1)
+          PY
+          python3 /tmp/client-test.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-hosted-laya-client-evidence
+          path: evidence
+          retention-days: 1
