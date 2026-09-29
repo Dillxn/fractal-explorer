@@ -1,0 +1,50 @@
+name: Public Laya runtime verification
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-runtime-verification.yml]
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch public immutable model and published runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime model
+          curl --fail --location --retry 2 --max-time 90 https://registry.npmjs.org/kevala/-/kevala-0.1.3.tgz -o runtime/kevala-0.1.3.tgz
+          tar xf runtime/kevala-0.1.3.tgz -C runtime
+          curl --fail --location --retry 2 --max-time 240 https://huggingface.co/bvolpato/kevala-packs/resolve/45da41504c6c117eca940103e49dd5eb1c3eab4f/laya-q8.kevala -o model/laya-q8.kevala
+          sha256sum runtime/kevala-0.1.3.tgz runtime/package/js/src/index.js runtime/package/js/src/engine-worker.js model/laya-q8.kevala | tee runtime/SHA256SUMS.txt
+          cp runtime/SHA256SUMS.txt model/SHA256SUMS.txt
+          node --check runtime/package/js/src/index.js
+          node --check runtime/package/js/src/engine-worker.js
+          grep -nE 'serve|export|pageEngine' runtime/package/js/src/engine-worker.js | head -25 || true
+          grep -nE 'serve|pageEngine|VERSION' runtime/package/js/src/index.js | head -25 || true
+          python3 - <<'PY'
+          import json, pathlib, struct
+          p=pathlib.Path('model/laya-q8.kevala')
+          with p.open('rb') as f:
+              prefix=f.read(16)
+              assert prefix[:4]==b'KVLA'
+              n=struct.unpack_from('<I',prefix,8)[0]
+              header=json.loads(f.read(n))
+          report={'bytes':p.stat().st_size,'model':header.get('model'),'config':header.get('config')}
+          pathlib.Path('model/manifest.json').write_text(json.dumps(report,indent=2))
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: actual-npm-runtime
+          path: runtime
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: actual-public-laya-q8
+          path: model
+          retention-days: 1
+          compression-level: 0
