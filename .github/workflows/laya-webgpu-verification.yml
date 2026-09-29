@@ -1,0 +1,78 @@
+name: Real Laya WebGPU verification
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-webgpu-verification.yml]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install browser test driver and fetch public artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q playwright==1.55.0
+          mkdir -p www/current www/old evidence
+          curl -fL --retry 2 --max-time 90 https://registry.npmjs.org/kevala/-/kevala-0.1.3.tgz -o old.tgz
+          tar xf old.tgz -C www/old
+          curl -fL --retry 2 --max-time 90 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/bvolpato/kevala/actions/artifacts/11001664781/zip -o current.zip
+          unzip -q current.zip -d current
+          tar xf current/kevala-0.1.3.tgz -C www/current
+          curl -fL --retry 2 --max-time 240 https://huggingface.co/bvolpato/kevala-packs/resolve/45da41504c6c117eca940103e49dd5eb1c3eab4f/laya-q8.kevala -o www/laya-q8.kevala
+          printf '<!doctype html><title>Real Laya WebGPU verification</title><h1>Real Laya runtime test</h1><pre id="status">Loading</pre>' > www/index.html
+          sha256sum www/current/package/js/src/engine-worker.js www/current/package/js/src/kevala-simd.wasm www/laya-q8.kevala > evidence/SHA256SUMS.txt
+          if ! command -v google-chrome >/dev/null; then python3 -m playwright install --with-deps chromium; fi
+      - name: Execute real browser loader and predictions
+        run: |
+          cat > test_browser.py <<'PY'
+          import json,time,threading,http.server,functools,shutil,traceback,pathlib
+          from playwright.sync_api import sync_playwright
+          server=http.server.ThreadingHTTPServer(('127.0.0.1',8765),functools.partial(http.server.SimpleHTTPRequestHandler,directory='www'))
+          threading.Thread(target=server.serve_forever,daemon=True).start()
+          report={'standIn':False,'backendRequested':'webgpu','physicalGpuBenchmark':False,'runtimeRevision':'967d2f4bcf0effb21a76181552a3998fff49bbf7'}
+          with sync_playwright() as p:
+              browser=p.chromium.launch(executable_path=shutil.which('google-chrome'),headless=True,args=['--no-sandbox','--enable-unsafe-webgpu','--use-angle=swiftshader','--enable-features=Vulkan','--use-vulkan=swiftshader','--disable-vulkan-surface'])
+              page=browser.new_page(viewport={'width':1100,'height':800});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+              try:
+                  page.goto('http://127.0.0.1:8765/')
+                  report['oldContract']=page.evaluate('''async()=>{const e=await import('/old/package/js/src/engine-worker.js');let error=null;try{e.serve(new MessageChannel().port2)}catch(x){error=x.message}return {serve:typeof e.serve,error}}''')
+                  report['gpu']=page.evaluate('''async()=>{const a=await navigator.gpu.requestAdapter();return {adapter:!!a,info:a?{vendor:a.info.vendor,architecture:a.info.architecture,description:a.info.description}:null}}''')
+                  page.evaluate('''async()=>{
+                    const e=await import('/current/package/js/src/engine-worker.js');if(typeof e.serve!=='function')throw new Error('Missing serve export');
+                    const ch=new MessageChannel();let resolveReady,rejectReady,id=0;const pending=new Map();window.receipts=[];
+                    const ready=new Promise((r,j)=>{resolveReady=r;rejectReady=j});
+                    ch.port1.onmessage=({data:m})=>{if(m.type==='progress')document.querySelector('#status').textContent=m.message||m.phase;
+                      if(m.type==='ready'){window.modelInfo=m.info;resolveReady()}
+                      if(m.type==='error'){const err=new Error(m.message);if(m.id===undefined)rejectReady(err);else pending.get(m.id)?.reject(err)}
+                      if(m.type==='result'){pending.get(m.id)?.resolve(m);pending.delete(m.id)}};
+                    e.serve(ch.port2);ch.port1.start();
+                    window.actualPredict=(state)=>new Promise((resolve,reject)=>{const n=++id;pending.set(n,{resolve,reject});ch.port1.postMessage({type:'decide',id:n,requests:[{state,questions:{mutation:{type:'choice',instructions:'Choose the requested next operation.',criteria:{continue:'continue tuning',hold:'make no change'}}}}]})});
+                    window.actualDispose=()=>{e.dispose();ch.port1.close();ch.port2.close()};
+                    ch.port1.postMessage({type:'load',options:{model:location.origin+'/laya-q8.kevala',backend:'webgpu',threads:1,cache:false,cpuKernel:'2x4',gpuKernel:'generic',submit:'split',wasmBase:location.origin+'/current/package/js/src/'}});
+                    await ready;
+                  }''')
+                  report['info']=page.evaluate('window.modelInfo')
+                  assert report['info']['backend']=='webgpu'
+                  report['decisions']=page.evaluate('''async()=>{const rows=[];for(let i=0;i<3;i++){const t=performance.now();const r=await actualPredict('Measurement '+i+'. Continue tuning the current experiment.');rows.push({elapsedMs:performance.now()-t,response:r});document.querySelector('#status').textContent=JSON.stringify(rows,null,2)}return rows}''')
+                  assert all(x['response']['responses'][0]['answers']['mutation']['type']=='choice' for x in report['decisions'])
+                  page.screenshot(path='evidence/actual-webgpu.png',full_page=True)
+                  page.evaluate('actualDispose()');report['passed']=True
+              except Exception as e:
+                  report['passed']=False;report['error']=str(e);report['traceback']=traceback.format_exc()
+                  try:page.screenshot(path='evidence/failure.png',full_page=True)
+                  except:pass
+              finally:
+                  report['pageErrors']=errors;pathlib.Path('evidence/browser-results.json').write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2));browser.close();server.shutdown()
+          PY
+          python3 test_browser.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-webgpu-browser-evidence
+          path: evidence
+          retention-days: 1
