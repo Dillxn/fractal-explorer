@@ -1,0 +1,59 @@
+name: Hosted Laya browser verification
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-hosted-browser.yml]
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install browser driver
+        run: python3 -m pip install -q playwright==1.55.0
+      - name: Exercise real hosted API from an opaque-origin browser page
+        run: |
+          mkdir -p evidence
+          cat > /tmp/test.py <<'PY'
+          import json,pathlib,shutil,time,traceback,urllib.request
+          from playwright.sync_api import sync_playwright
+          out={'realHostedModel':True,'credentials':'omit','mockResponses':False,'requests':[]}
+          try:
+              with urllib.request.urlopen('https://huggingface.co/spaces/convaiinnovations/laya-demo/raw/main/rl_agent_demo.py',timeout=20) as r:pathlib.Path('evidence/demo-source.py').write_bytes(r.read())
+          except Exception as e:out['sourceError']=str(e)
+          with sync_playwright() as p:
+              b=p.chromium.launch(executable_path=shutil.which('google-chrome') or shutil.which('chromium'),headless=True,args=['--no-sandbox'])
+              page=b.new_page();out['browser']=b.version;errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+              page.set_content('<h1>Actual hosted Laya requests</h1><pre id="result"></pre>')
+              try:
+                  out['requests']=page.evaluate('''async()=>{
+                    const base='https://convaiinnovations-laya-demo.hf.space/gradio_api/call';const rows=[];
+                    for(let i=0;i<3;i++){
+                      const state='Measurement '+i+'. The user asks to continue tuning rather than pause.';
+                      const questions={mutation:{type:'choice',instructions:'Select the requested operation.',criteria:{continue:'continue tuning',hold:'pause without changing anything'}}};
+                      const t=performance.now();
+                      const submit=await fetch(base+'/v2/run_playground',{method:'POST',credentials:'omit',headers:{'Content-Type':'application/json'},body:JSON.stringify({state_text:state,questions_text:JSON.stringify(questions)})});
+                      if(!submit.ok)throw new Error('Submission '+submit.status+': '+await submit.text());
+                      const ticket=await submit.json();
+                      const r=await fetch(base+'/run_playground/'+encodeURIComponent(ticket.event_id),{credentials:'omit'});const sse=await r.text();
+                      const blocks=sse.split(/\\r?\\n\\r?\\n/);let data;
+                      for(const block of blocks){const event=block.split(/\\r?\\n/).find(s=>s.startsWith('event:'))?.slice(6).trim();const text=block.split(/\\r?\\n/).filter(s=>s.startsWith('data:')).map(s=>s.slice(5).trimStart()).join('\\n');if(event==='error')throw new Error(text);if(event==='complete')data=JSON.parse(text);}
+                      if(!data)throw new Error('No completion: '+sse);
+                      const raw=typeof data[1]==='string'?JSON.parse(data[1]):data[1];
+                      if(!raw.answers?.mutation?.probabilities)throw new Error('Invalid result '+JSON.stringify(data));
+                      rows.push({state,questions,submitStatus:submit.status,eventId:ticket.event_id,response:raw,elapsedMs:performance.now()-t,sse});
+                    } document.querySelector('#result').textContent=JSON.stringify(rows,null,2);return rows;
+                  }''')
+                  out['passed']=True;page.screenshot(path='evidence/live-api.png',full_page=True)
+              except Exception as e:out['passed']=False;out['error']=str(e);out['traceback']=traceback.format_exc()
+              finally:out['pageErrors']=errors;pathlib.Path('evidence/live-api.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2));b.close()
+          if not out.get('passed'):raise SystemExit(1)
+          PY
+          python3 /tmp/test.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-laya-browser-evidence
+          path: evidence
+          retention-days: 1
