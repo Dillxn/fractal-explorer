@@ -1,0 +1,28 @@
+name: Public digit benchmark retrieval
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/fractal-public-datasets.yml]
+permissions:
+  contents: read
+jobs:
+  datasets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download original public datasets only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p datasets/mnist datasets/uci
+          curl --fail --location --retry 2 --max-time 60 'https://archive.ics.uci.edu/static/public/80/optical+recognition+of+handwritten+digits.zip' -o datasets/uci/optdigits.zip
+          for file in train-images-idx3-ubyte.gz train-labels-idx1-ubyte.gz t10k-images-idx3-ubyte.gz t10k-labels-idx1-ubyte.gz; do
+            curl --fail --location --retry 2 --max-time 60 "https://storage.googleapis.com/cvdf-datasets/mnist/$file" -o "datasets/mnist/$file"
+          done
+          find datasets -type f -exec sha256sum {} \; | tee datasets/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: original-public-digit-datasets
+          path: datasets
+          retention-days: 1
+          compression-level: 0
