@@ -1,0 +1,44 @@
+name: Laya measured candidate request verification
+on:
+  push:
+    branches: [test/laya-runtime-verification]
+    paths: [.github/workflows/laya-measured-candidates-v11.yml]
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install -q playwright==1.55.0
+      - name: Genuine requests through the retained hosted adapter
+        run: |
+          mkdir -p evidence
+          cat > /tmp/measured-client.py <<'PY'
+          import json,pathlib,hashlib,shutil,traceback
+          from playwright.sync_api import sync_playwright
+          client=pathlib.Path('qa/hosted-laya.js').read_text()
+          state='Experiment revision 2. Measured candidate results, smaller MSE is better. Current training MSE 0.016474, validation MSE 0.020012, validation correct 484/500.\nincrease: G z0_re +0.0200; train MSE 0.020040; validation MSE 0.022586; correct 478; fails no-regression gate\ndecrease: G z0_re -0.0200; train MSE 0.020299; validation MSE 0.024000; correct 476; fails no-regression gate\nhold: keep the current best model; train MSE 0.016474; validation MSE 0.020012; correct 484; eligible'
+          q={'mutation':{'type':'choice','instructions':'Pick the eligible candidate with the lowest measured validation MSE. Do not pick a candidate marked as failing the no-regression gate. If no changed candidate is eligible, pick hold.','criteria':{'increase':'G z0_re +0.0200','decrease':'G z0_re -0.0200','hold':'keep the current best model'}}}
+          out={'clientSha256':hashlib.sha256(client.encode()).hexdigest(),'request':{'state':state,'questions':q},'scope':'real hosted Laya with measured candidate summary; no private numerical code or model weights uploaded; not an end-to-end learning or performance benchmark','standIn':False}
+          with sync_playwright() as p:
+              b=p.chromium.launch(executable_path=shutil.which('google-chrome') or shutil.which('chromium'),headless=True,args=['--no-sandbox'])
+              page=b.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)));page.set_content('<h1>Real measured-candidate Laya test</h1><pre id="result"></pre>');page.add_script_tag(content=client);out['browser']=b.version
+              try:
+                  out['samples']=page.evaluate('''async req=>{const rows=[];for(let i=0;i<3;i++){rows.push(await LayaHosted.predict(req.state,req.questions));document.querySelector('#result').textContent=JSON.stringify(rows,null,2)}return rows}''',out['request'])
+                  assert len({r['hosted']['eventId'] for r in out['samples']})==3
+                  out['selectedHoldCount']=sum(r['answers']['mutation']['choice']=='hold' for r in out['samples'])
+                  out['transportPassed']=True
+                  page.screenshot(path='evidence/measured-api.png',full_page=True)
+              except Exception as e:out['transportPassed']=False;out['error']=str(e);out['traceback']=traceback.format_exc()
+              finally:out['pageErrors']=errors;pathlib.Path('evidence/measured-api.json').write_text(json.dumps(out,indent=2));print(json.dumps(out,indent=2));b.close()
+          if not out.get('transportPassed'):raise SystemExit(1)
+          PY
+          python3 /tmp/measured-client.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v11-measured-hosted-evidence
+          path: evidence
+          retention-days: 1
